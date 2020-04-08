@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Game</title>
+		<meta charset="utf-8"/>
+		<script type="text/javascript" src="./js/msgpack.min.js"></script>
+		<script type="text/javascript" src="./js/app.js"></script>
+		<script src="./js/nimble.js" type="text/javascript"></script>
+		<script src="./js/pixi.js" type="text/javascript"></script>
+		<script src="./js/pixi-sound.js" type="text/javascript"></script>
+		<script src="./js/gm.js" type="text/javascript"></script>
+	</head>
+	<body>
+		<script type="text/javascript">
+/*
+	This is a game created for testing GM-JS
+	Version 1.5.0
+*/
+oncontextmenu = function(){return false;};
+window.onload = function(){'use strict';
+	//Setup multiplayer
+	
+	var findGroup = function(){
+		var code = localStorage.getItem('currentCode');
+		if(code == null){
+			mplay.create(10).then(function(grp){
+				localStorage.setItem('currentCode', grp.code());
+				mplayGroup = grp;
+				GameInit();
+			});
+		} else {
+			mplay.join(code).then(function(grp){
+				mplayGroup = grp;
+				GameInit();
+			}).catch(function(){
+				localStorage.removeItem('currentCode');
+				findGroup();
+				return;
+			})
+		}
+	}
+	
+	var mplay = null, mplayGroup;
+	var MplayInit = function() {
+		if(mplay == null){
+			var GroupCom = require('server.groupcommunicator');
+			mplay = new GroupCom({domain:'192.168.2.71'});
+		}
+		mplayGroup = null;
+		mplay.on('connect', findGroup);
+	};
+	
+	//Setup Sprites
+	var Sprites = [{path:'images/sprites.png', strip:[{name:'spr_character', animated:{count:12,columns:6,w:64,h:64}},
+		{name:'spr_enemy', animated:{count:12,columns:6,w:64,h:64}}]},
+		{name:'spr_treasure', path:'images/treasurebox.png'},
+		{name:'spr_wall', path:'images/wall.png'},
+		{name:'spr_shield', path:'images/shield.png'},
+		{name:'spr_health', path:'images/health.png'},
+		{name:'spr_bullet', path:'images/bullet.png'},
+		{name:'spr_blackhole', path:'images/blackhole.png'},
+		{name:'bck_background', path:'images/background.png'}];
+	//Setup sounds
+	var Sounds = [{name:'snd_lazer', path:'sounds/lazer.mp3'},
+	{name:'snd_break', path:'sounds/break.mp3'},
+	{name:'snd_punch', path:'sounds/punch.mp3'},
+	{name:'snd_zap', path:'sounds/zap.mp3'},
+	{name:'snd_death', path:'sounds/death.mp3'},
+	{name:'snd_kill', path:'sounds/kill.mp3'},
+	{name:'snd_treasure', path:'sounds/treasure.mp3'},
+	{name:'snd_shield', path:'sounds/shield.mp3'},
+	{name:'snd_health', path:'sounds/health.mp3'}];
+	
+	//Sets the game room to window size
+	//Math.round(window.innerWidth/32)*32
+	//Math.round(window.innerHeight/32)*32
+	
+	if(typeof(GMJS) == 'object'){
+		GMJS.StartGameEngine({
+			onStart:MplayInit,
+			images:Sprites,
+			sounds:Sounds,
+			room:{width:480, height:608},
+			view:{width:400, height:450}
+		});
+	} else return console.error('GMJS not found');
+	
+	var g = GMJS;
+	console.log(g);
+	function draw_bar(g, x, y, color, life, full, width){
+		width = width || 32;
+		full = full || 100;
+		color.border = ('border' in color)?color.border:0XFFFFFF;
+		color.fill = ('fill' in color)?color.fill:0X000000;
+		g.lineStyle(1, color.border);
+		g.drawRect(x - width/2, y, width, 8);
+		g.lineStyle(0);
+		g.beginFill(color.fill);
+		g.drawRect(x - width/2, y, width*life/full, 8);
+		g.endFill();
+	}
+	
+	function GameInit(){
+		//Setup Global Variables
+		var difficulty = 0;
+		var counterindex = 0;
+		
+		const PLAYER = 0;
+			const P_MOVE = 0;
+			const P_FIRE = 1;
+			const P_HEALTH = 2;
+		const ENEMY = 1;
+			const E_MOVE = 0;
+			const E_HEALTH = 1;
+			const E_IMAGE = 2;
+		const ITEM = 2;
+			const ITM_TREASURE = 0;
+			const ITM_HEALTH = 1;
+			const ITM_SHEILD = 2;
+		const BLACKHOLE = 3;
+			const BH_MOVE = 0;
+		const STATS = 4;
+		
+		//Change some things
+		g.sound_volume('snd_shield', 0.5);
+		g.sound_volume('snd_treasure', 0.6);
+		
+		//Setup Fonts
+		var PlayerFont = g.create_text_style({fontFamily: 'Arial', fontSize: 10, fill:0xFFFFFF});
+		//Setup Objects
+		var Background = new g.background({
+			image:'bck_background',
+			origin:{x:g.room.width/2, y:g.room.height/2}
+		});
+		var Cont = new g.object({
+				name:'controller',
+				creation:function(t){
+				
+					mplay.on('message', function(evt){
+						var id = evt.from.id(), p,
+							data = evt.data;
+						if(!('code' in data) || !('cmd' in data)) return;
+						
+						switch(data.code) {
+							case PLAYER:
+								if(!(id in t.players)){
+									p = Character.instance_create(0, 0);
+									t.players[id] = p;
+								} else {
+									p = t.players[id];
+								}
+								
+								if(data.cmd == P_MOVE){
+									p.x = data.x;
+									p.y = data.y;
+								}
+								if(data.cmd == P_FIRE){
+									p.direction = data.mdir;
+									p.fireBullet(data.dir);
+								}
+								if(data.cmd == P_HEALTH){
+									p.health = data.life;
+									p.shield = data.shield;
+								}
+								break;
+							case ITEM:
+								switch(data.cmd){
+									case ITM_HEALTH:
+										HealthItem.instance_create(data.x, data.y);
+									break;
+									case ITM_SHEILD:
+										ShieldItem.instance_create(data.x, data.y);
+									break;
+									case ITM_TREASURE:
+										TreasureBox.instance_create(data.x, data.y);
+									break;
+								}
+							break;
+							case ENEMY:{
+								var eid = data.id, e;
+								if(!(eid in t.enemies)){
+									e = Enemy.instance_create(0, 0);
+									t.enemies[eid] = e;
+								} else {
+									e = t.enemies[eid];
+								}
+								if(data.cmd == E_MOVE){
+									e.x = data.x;
+									e.y = data.y;
+								}
+								if(data.cmd == E_HEALTH){
+									e.health = data.life;
+								}
+								if(data.cmd == E_IMAGE){
+									e.image_single = data.image;
+								}
+								break;
+							}
+							case BLACKHOLE:{
+								var eid = data.id, e;
+								if(!(eid in t.enemies)){
+									e = Blackhole.instance_create(0, 0);
+									t.enemies[eid] = e;
+								} else {
+									e = t.enemies[eid];
+									//if(!(e instanceof Blackhole)) return;
+								}
+								if(data.cmd == BH_MOVE){
+									e.x = data.x;
+									e.y = data.y;
+								}
+								break;
+							}
+							case STATS:
+								difficulty = data.difficulty;
+								t.kills = data.kills;
+								break;
+						}
+					});
+					
+					mplay.on('left', function(evt){
+						var id = evt.user.id();
+						if(id in t.players){
+							t.players[id].instance_destroy();
+							delete t.players[id];
+						}
+					});
+					
+					mplay.on('leave', function(evt){
+						alert('Server Connection Lost');
+						location.reload();
+					});
+					
+					mplay.on('joined', function(evt){
+						evt.user.send({code:PLAYER, cmd:P_MOVE, x:t.player.x, y:t.player.y});
+						evt.user.send({code:PLAYER, cmd:P_HEALTH, life:t.player.health, shield:t.player.shield});
+						evt.user.send({code:STATS, cmd:0, kills:t.kills, difficulty:difficulty})
+						if(mplayGroup.isMine()){
+							g.With(ItemObjects, function(ii){
+								evt.user.send({code:ITEM, cmd:ii.type, x:ii.x, y:ii.y});
+							});
+							g.With(Enemy, function(ii){
+								evt.user.send({code:ENEMY, cmd:E_MOVE, id:ii.id, x:ii.x, y:ii.y});
+								evt.user.send({code:ENEMY, cmd:E_HEALTH, id:ii.id, life:ii.health});
+								evt.user.send({code:ENEMY, cmd:E_IMAGE, id:ii.id, image:ii.image_single});
+							});
+						}
+					});
+					
+					mplay.on('owner', function(evt){
+						g.With(Enemy, function(ii){
+							if(evt.type == 'newowner'){
+								ii.reset_motion.time = 10;
+								ii.ai = true;
+							} else {
+								ii.ai = false;
+							}
+						});
+						g.With(Blackhole, function(ii){
+							if(evt.type == 'newowner'){
+								ii.ai = true;
+							} else {
+								ii.ai = false;
+							}
+						});
+						if(evt.type == 'newowner'){
+							t.starttimers(true);
+						} else {
+							t.starttimers(false);
+						}
+					});
+					
+					t.players = {};
+					t.enemies = {};
+					t.debug = false;
+					t.draw_kills = g.create_text('', 8, 8, PlayerFont);
+						t.draw_kills.align('top', 50);
+						t.draw_kills.depth = -2;
+					t.starttimers = function(start){
+						start = !!start;
+						t.create_item.time = (60 + Math.random()*100)*start;
+						t.create_enemy.time = (100)*start;
+						t.create_blackhole.time = (1900 + Math.random(400))*start;
+					}
+					t.kills = 0;
+					t.player = null;
+					t.tm = 0;
+					t.create_player.time = 50; //create my player
+					if(mplayGroup.isMine()){
+						t.starttimers(true);
+					}
+				},
+				step:function(t){
+					Background.yscale = Background.xscale = 0.5 + Math.sin((t.tm++)/200)/20;
+					if(g.instance_exists(t.player)){
+						t.draw_kills.text = 'Kills: ' + t.kills.toString() + '  Points: '+t.player.points.toString();
+					}
+					if(g.keyboard_check_pressed('P')) t.debug = !t.debug;
+					if(g.keyboard.control && g.keyboard_check_pressed('A')){
+						t.edit = !t.edit;
+						g.With(InGameObjects, function(ii){if(ii.object_index != Wall)ii.instance_destroy();});
+						t.starttimers(!t.edit);
+						t.draw_kills.visible = !t.edit;
+						console.log('Editor mode now ' + (t.edit)?'activated':'deactivated');
+					}
+					if(t.edit){
+						var xx = Math.floor(g.mouse_x/32)*32 + 16,
+						yy = Math.floor(g.mouse_y/32)*32 + 16;
+						t.graphics.beginFill(0x777777);
+						t.graphics.drawCircle(xx, yy, 8);
+						if(g.mouse_check('left')){
+							if(xx > 0 && yy > 0 && xx < g.room.width && yy < g.room.height && !g.collision_point(xx, yy, InGameObjects)){
+								Wall.instance_create(xx, yy);
+							}
+						}
+						if(g.mouse_check('right')){
+							if(xx > 32 && yy > 32 && xx < g.room.width-32 && yy < g.room.height-32){
+								var ii;
+								if(ii = g.collision_point(xx, yy, CollisionObjects)) ii[0].instance_destroy();
+							}
+						}
+						g.view.x = Math.max(0, Math.min(g.room.width - g.view.width, g.view.x + (g.keyboard.D - g.keyboard.A)*6 ));
+						g.view.y = Math.max(0, Math.min(g.room.height - g.view.height, g.view.y + (g.keyboard.S - g.keyboard.W)*6 ));
+					}
+				},
+				end_step:function(t){
+				
+				var a = 0.4;
+					if(t.debug && !t.edit){
+						g.With(Enemy, function(ii){
+							t.graphics.beginFill((g.collision_point(ii.x - 32, ii.y, CollisionObjects))?0xFF0000:0xFFFFFF, a);
+							t.graphics.drawCircle(ii.x - 32, ii.y, 8);
+							t.graphics.beginFill((g.collision_point(ii.x + 32, ii.y, CollisionObjects))?0xFF0000:0xFFFFFF, a);
+							t.graphics.drawCircle(ii.x + 32, ii.y, 8);
+							t.graphics.beginFill((g.collision_point(ii.x, ii.y - 32, CollisionObjects))?0xFF0000:0xFFFFFF, a);
+							t.graphics.drawCircle(ii.x, ii.y - 32, 8);
+							t.graphics.beginFill((g.collision_point(ii.x, ii.y + 32, CollisionObjects))?0xFF0000:0xFFFFFF, a);
+							t.graphics.drawCircle(ii.x, ii.y + 32, 8);
+						});
+						t.graphics.beginFill(0X444444, a);
+						if(g.instance_exists(t.player)){
+							t.graphics.drawCircle(t.player.x, t.player.y, t.player.mask.radius);
+							t.graphics.lineStyle(4, 0x333333, a);
+							t.graphics.drawLine(0,0,t.player.x, t.player.y);
+							t.graphics.drawLine(g.room.width,0,t.player.x, t.player.y);
+							t.graphics.drawLine(0,g.room.height,t.player.x, t.player.y);
+							t.graphics.drawLine(g.room.width,g.room.height,t.player.x, t.player.y);
+							t.graphics.lineStyle(2, 0x777777, a);
+							var v = g.vector_direction(t.player.direction), dist = 48;
+							t.graphics.drawLine(t.player.x, t.player.y, t.player.x + v[0]*dist, t.player.y + v[1]*dist);
+							t.graphics.lineStyle(2, 0x992222, a);
+							t.graphics.drawLine(t.player.x, t.player.y, t.player.x + t.player.debug[0][0]*t.player.debug[1]*100, t.player.y + t.player.debug[0][1]*t.player.debug[1]*100);
+						}
+					}
+					if(g.instance_exists(t.player) && !t.edit){
+						g.view.x = Math.max(0, Math.min(g.room.width - g.view.width, t.player.x - g.view.width / 2));
+						g.view.y = Math.max(0, Math.min(g.room.height - g.view.height, t.player.y - g.view.height / 2));
+						t.draw_kills.x = g.view.x + 8;
+						t.draw_kills.y = g.view.y + 8;
+						t.graphics.lineStyle();
+						t.graphics.beginFill(0X444444);
+						t.graphics.drawRect(g.view.x, g.view.y, 128, 16);
+					}
+				},
+				alarms:[
+				{name:'create_item', code:function(t){
+					if(!mplayGroup.isMine()) return;
+					var item = ([TreasureBox, HealthItem, ShieldItem])[Math.round(Math.random()*2)];
+					var ii = item.instance_create(Math.random()*g.room.width,Math.random()*g.room.height),
+						cmd;
+					switch(item){
+						case TreasureBox: cmd = ITM_TREASURE;break;
+						case HealthItem: cmd = ITM_HEALTH;break;
+						case ShieldItem: cmd = ITM_SHEILD;break;
+					}
+					ii.type = cmd;
+					mplayGroup.send({code:ITEM, cmd:cmd, x:ii.x, y:ii.y});
+					t.create_item.time = 10*((g.instance_exists(t.player))?t.player.points:0) + 100*(ItemObjects.instance_number() + 1) + Math.random()*100;
+				}},
+				{name:'create_player', code:function(t){
+					var found = false;
+					if(g.instance_exists(t.player)) g.With(t.player, function(ii){if(ii.me) found = true; return false;});
+					if(!found){
+						t.player = Character.instance_create(g.room.width/2, g.room.height/2);
+						t.player.me = true;
+						mplayGroup.send({code:PLAYER, cmd:P_MOVE, x:t.player.x, y:t.player.y});
+					}
+				}},
+				{name:'create_enemy', code:function(t){var tm = 0;
+					if(!mplayGroup.isMine()) return;
+					t.create_enemy.time = Math.max(100 + Math.random()*(2000 - t.kills), 50);
+					var rp = Math.min(Math.max(Math.round(Math.random()*(t.kills/(4 + Enemy.instance_number()*2))), 1), 5);
+					for(var r = 0; r < rp; r++){
+						do {var xx = 64 + Math.random()*(g.room.width - 128), yy = 64 + Math.random()*(g.room.height - 128);
+						if(tm++>100*rp)return;} while (g.collision_point(xx, yy, CollisionObjects));
+						var e = Enemy.instance_create(xx, yy);
+						e.ai = true;
+						t.enemies[e.id] = e;
+						difficulty = Math.min(5, difficulty + Math.random()/15);
+						mplayGroup.send({code:ENEMY, cmd:E_MOVE, id:e.id, x:e.x, y:e.y});
+						mplayGroup.send({code:ENEMY, cmd:E_IMAGE, id:e.id, image:e.image_single});
+					}
+				}},{name:'create_blackhole', code:function(t){var off = 32;
+					if(!mplayGroup.isMine()) return;
+					t.create_blackhole.time = 2000 + Math.random()*25000;
+					if(g.instance_exists(Blackhole)) return;
+					if(Math.round(Math.random())){var xx = Math.random()*g.room.width;var yy = (Math.round(Math.random()))?-off:g.room.height + off;} else {xx = (Math.round(Math.random()))?-off:g.room.width + off;yy = Math.random()*g.room.height;};
+					var ii = Blackhole.instance_create(xx, yy);
+					ii.ai = true;
+					t.enemies[ii.id] = ii;
+					mplayGroup.send({code:BLACKHOLE, cmd:BH_MOVE, id:ii.id, x:ii.x, y:ii.y});
+				}}
+				]
+			});
+		var InGameObjects = new g.object({
+			name:'game_objects'
+		});
+		var CollisionObjects = new g.object({
+			name:'collision_objects',
+			parent:InGameObjects
+		});
+		var ItemObjects = new g.object({
+			name:'ItemPar',
+			parent:InGameObjects,
+			mask:{x:0, y:0, w:8, h:8},
+			creation:function(t){
+				t.depth = g.room.height - t.y;
+				t.image_alpha = 0;
+				t.xscale = 0.5;
+				t.yscale = 0.5;
+			},
+			step:function(t){
+				if(t.image_alpha < 1) t.image_alpha += 0.02;
+			},
+			collision:[{object:CollisionObjects, code:function(t,other){if(other.object_index == Wall) t.instance_destroy();}}]
+		});
+		var Bullet = new g.object({
+				name:'Bullet',
+				parent:InGameObjects,
+				image:'spr_bullet',
+				mask:{x:0,y:0,w:8,h:8},
+				creation:function(t){
+					var p = g.get_instance(Character),
+					dist = g.point_distance(t.x, t.y, p.x, p.y);
+					if(dist < 400) g.sound_play('snd_lazer', {volume:Math.min(0.75, Math.max(0, Math.min(1, 40/dist)))});
+					t.xscale = 0.25;
+					t.yscale = 0.25;
+					t.spd = 8;
+					t.image_alpha = 0;
+					t.dir = [0,0,0,0];//lrud
+				},
+				step:function(t){
+					//t.image_angle = (t.dir[3])?(180 - 45*t.dir[1] + 45*t.dir[0]):((t.dir[1])?(90 - 45*t.dir[2]):((t.dir[0])?(-90 + 45*t.dir[2]):0));
+					t.image_angle = 90 - t.direction;
+					if(t.image_alpha < 1) t.image_alpha += 0.25;
+					t.depth = g.room.height - t.y;
+					g.With(Blackhole, function(bh){
+						var tdir = g.point_direction(t.x, t.y, bh.x, bh.y);
+						t.direction += g.direction_sign(t.direction, tdir)*(Math.abs(t.direction - tdir)/(g.point_distance(t.x, t.y, bh.x, bh.y)/2))*bh.image_alpha;
+					});
+					
+					var d = g.vector_direction(t.direction);
+					t.x += d[0]*t.spd;
+					t.y += d[1]*t.spd;
+					/*
+					if(t.dir[0]) t.x -= t.spd;
+					if(t.dir[1]) t.x += t.spd;
+					if(t.dir[2]) t.y -= t.spd;
+					if(t.dir[3]) t.y += t.spd;*/
+				},
+				collision:[
+					{object:CollisionObjects, code:function(t, other){
+						t.instance_destroy();
+						var p = g.get_instance(Character),
+						dist = g.point_distance(t.x, t.y, p.x, p.y);
+						if(dist < 400) g.sound_play('snd_break').volume = Math.max(0, Math.min(1, 26/dist));
+					}}
+				]
+			});
+		var Blackhole = new g.object({
+				image:'spr_blackhole',
+				parent:InGameObjects,
+				creation:function(t){
+					t.id = counterindex++;
+					t.ai = false;
+					t.tm = 0;
+					t.image_alpha = 0;
+					t.direction = g.point_direction(t.x, t.y, g.room.width/Math.max(0.1, Math.random()*4), g.room.height/Math.max(0.1, Math.random()*4));
+				},
+				destroyed:function(t){
+					delete Cont.instances[0].enemies[t.id];
+				},
+				step:function(t){
+					t.image_angle = (t.image_angle + 2) % 360;
+					t.xscale = t.yscale = 0.7 + Math.sin(t.tm++/50)/ 8;
+					if(t.ai){
+						var vc = g.vector_direction(t.direction);
+						t.x += vc[0];
+						t.y += vc[1];
+						mplayGroup.send({code:BLACKHOLE, cmd:BH_MOVE, id: t.id, x:t.x, y:t.y});
+					}
+					
+					if(t.x > (g.room.width + t.sprite.width) || t.y > (g.room.height + t.sprite.height) || t.x < -t.sprite.width || t.y < -t.sprite.height)
+						t.image_alpha -= 0.01;
+					else
+						t.image_alpha += (t.image_alpha < 1)?0.003:0;
+					if(!t.image_alpha) t.instance_destroy();
+				}
+			});
+		var TreasureBox = new g.object({
+				name:'TreasureBox',
+				image:'spr_treasure',
+				parent:ItemObjects
+			});
+		var HealthItem = new g.object({
+				name:'Health',
+				image:'spr_health',
+				parent:ItemObjects
+			});
+		var ShieldItem = new g.object({
+				name:'Shield',
+				image:'spr_shield',
+				parent:ItemObjects
+			});
+		var Enemy = new g.object({
+			image:'spr_enemy',
+			name:'Enemy',
+			parent:InGameObjects,
+			creation:function(t){
+				t.ai = false;
+				t.id = counterindex++;
+				t.health = 100;
+				t.xscale = 0.5;
+				t.yscale = 0.5;
+				t.reset_keys = function(){					
+					t.left = false;
+					t.right = false;
+					t.up = false;
+					t.down = false;
+				}
+				t.reset_keys();
+				t.reset_motion.time = 10;
+				t.image_alpha = 0;
+				t.spd = 2;
+				t.image_single = Math.round(Math.random()*difficulty);
+				t.power = t.image_single + 1;
+			},
+			destroyed:function(t){
+				delete Cont.instances[0].enemies[t.id];
+			},
+			step:function(t){
+				t.depth = g.room.height - t.y;
+				t.graphics.depth = t.depth - 1;
+				if(t.image_alpha >= 1){
+					draw_bar(t.graphics, t.x, t.y - t.sprite.height/2 - 10, {border:0x600000, fill:0XDD0000}, t.health);
+				}
+				if(t.image_alpha < 1) t.image_alpha += 0.1;
+				
+				if(t.health < 0) {
+					var p = Cont.instances[0].player,
+						dist = g.point_distance(t.x, t.y, p.x, p.y);
+					t.health = 0;
+					t.instance_destroy();
+					Cont.instances[0].kills++;
+					g.sound_play('snd_kill', {volume:Math.max(0, Math.min(1, 48/dist)), speed:1.1});
+					return;
+				}
+				
+				if(!t.ai) return;
+				
+				g.With(Blackhole, function(bh){
+					var dist;
+					var grav = g.vector_direction(g.point_direction(t.x, t.y, bh.x, bh.y));
+					var pull = Math.min(15, 500/(dist = g.point_distance(t.x, t.y, bh.x, bh.y)/bh.image_alpha))/(1 + (dist < 16)*4);
+					t.x += grav[0]*pull;
+					t.y += grav[1]*pull;
+				});
+				
+				if(t.up){t.y -= t.spd;}
+				if(t.down){t.y += t.spd;}
+				if(t.left){t.x -= t.spd;}
+				if(t.right){t.x += t.spd;}
+				if(t.up || t.down || t.left || t.right){
+					mplayGroup.send({code:ENEMY, cmd:E_MOVE, id: t.id, x:t.x, y:t.y});
+				}
+			},
+			alarms:[
+				{name:'reset_motion', code:function(t){
+					if(!t.ai) return;
+					var a_wall = [!!g.collision_point(t.x - 32, t.y, CollisionObjects),
+					!!g.collision_point(t.x + 32, t.y, CollisionObjects),
+					!!g.collision_point(t.x, t.y - 32, CollisionObjects),
+					!!g.collision_point(t.x, t.y + 32, CollisionObjects)];
+					t.reset_keys();
+					t.left = !!Math.round(Math.random()* (1+a_wall[1])) * (!a_wall[0]);
+					t.right = !!Math.round(Math.random()* (1+a_wall[0])) * (!a_wall[1]);
+					t.up = !!Math.round(Math.random()* (1+a_wall[3])) * (!a_wall[2]);
+					t.down = !!Math.round(Math.random()* (1+a_wall[2])) * (!a_wall[3]);
+					t.reset_motion.time = 10 + Math.random()*200;
+				}}
+			],
+			collision:[
+				{object:CollisionObjects, code:function(t, other){g.collision_bounce(t, other);if(t.reset_motion.time>10)t.reset_motion.time = 10;}},
+				{object:Bullet, code:function(t, other){
+					var p = Cont.instances[0].player,
+					dist = g.point_distance(other.x, other.y, p.x, p.y);
+					if(dist < 400) g.sound_play('snd_punch', {volume:Math.max(0, Math.min(1, 64/dist))});
+					other.instance_destroy();
+					if(!t.ai) return false;
+					t.health-= (10 + Math.random(20))/t.power;
+					mplayGroup.send({code:ENEMY, cmd:E_HEALTH, id:t.id, life:t.health});
+				}}, {object:ItemObjects, code:function(t, other){
+					if(other.image_alpha < 1) return;
+					other.instance_destroy();
+					var p = Cont.instances[0].player,
+						dist = g.point_distance(other.x, other.y, p.x, p.y),
+						snd;
+					switch(other.object_index){
+						case TreasureBox: snd='snd_treasure';break;
+						case HealthItem: snd='snd_health';
+							if(t.ai){
+								t.health = Math.min(t.health + 25, 100);
+								mplayGroup.send({code:ENEMY, cmd:E_HEALTH, id:t.id, life:t.health});
+							}break;
+						case ShieldItem: snd='snd_shield';break;
+					}
+					if(dist < 350 && snd) g.sound_play(snd, {volume:Math.max(0, Math.min(1, 30/dist))});
+				}}
+			]
+		});	
+		var Wall = new g.object({
+			name:'Wall',
+			parent:CollisionObjects,
+			image:'spr_wall',
+			creation:function(t){
+				t.depth = g.room.height - t.y;
+			}
+		});
+		var Character = new g.object({
+			name:'Character',
+			parent:InGameObjects,
+			image:'spr_character',
+			mask:{x:0,y:0,radius:16},
+			creation:function(t){
+				t.me = false;
+				t.image_single = 6;
+				t.points = 0;
+				t.health = 100;
+				t.shield = 50; //steps for invincibility after hit
+				t.reset_hit_rate = function(){if(t.hit) t.snd_zap.stop();t.image_alpha = t.hit;t.hit = false;t.flash = 0;t.hit_rate = Math.round(t.shield);}
+				t.reset_hit_rate();
+				t.image_alpha = 1;
+				t.canshoot = true;
+				t.spd = 3;
+				t.xscale = 0.5;
+				t.yscale = 0.5;
+				t.direction = 0;
+				t.up = false;t.down = false;t.left = false;t.right = false;
+				t.last_dir = [0,1,0,0]; //[left, right, up, down]
+				
+				t.fireBullet = function(dir) {
+					var ii=Bullet.instance_create(t.x + (dir[0]*-16) + (dir[1]*16), t.y + (dir[2]*-16) + (dir[3]*16));
+						ii.direction = t.direction;
+				}
+			},
+			step:function(t){
+				if(t.hit){
+					t.image_alpha = t.flash;
+				}
+				if(t.health <= 0 && t.me){
+					t.reset_hit_rate();
+					g.sound_play('snd_death');
+					t.instance_destroy();
+					g.With(Cont, function(tt){
+						tt.create_player.time = 100;
+					});
+					return;
+				}
+				
+				t.depth = g.room.height - t.y;
+				t.graphics.depth = t.depth - 1;
+				
+				if(!t.me) return;
+				t.up = g.keyboard.up;
+				t.down = (g.keyboard.down && !t.up);
+				t.left = g.keyboard.left;
+				t.right = (g.keyboard.right && !t.left);
+				var moving; if(moving = (t.left || t.right || t.up || t.down)) t.last_dir = [t.left, t.right, t.up, t.down];
+				var dir = t.last_dir;
+				t.direction = (dir[3])?(270 + 45*dir[1] - 45*dir[0]):((dir[1])?(45*dir[2]):((dir[0])?(-180 - 45*dir[2]):90));
+				var dist;
+				g.With(Blackhole, function(bh){
+					var grav = g.vector_direction(g.point_direction(t.x, t.y, bh.x, bh.y));
+					var pull = Math.min(15, 500/(dist = g.point_distance(t.x, t.y, bh.x, bh.y)/bh.image_alpha))/(1 + (dist < 16)*4);
+					t.debug = [grav, pull];
+					t.x += grav[0]*pull;
+					t.y += grav[1]*pull;
+				});
+				
+				if(t.up){t.y -= t.spd;}
+				if(t.down){t.y += t.spd;}
+				if(t.left){t.x -= t.spd;}
+				if(t.right){t.x += t.spd;}
+				
+				if(moving){
+					mplayGroup.send({code:PLAYER, cmd:P_MOVE, x:t.x, y:t.y});
+				}
+				
+				if(g.keyboard.control && t.canshoot){
+					t.canshoot = false;t.reset_shoot.time = Math.max(20 - t.points, 4);
+					t.fireBullet(t.last_dir);
+					mplayGroup.send({code:PLAYER, cmd:P_FIRE, dir:t.last_dir, mdir:t.direction});
+					//ii.dir = [].concat(t.last_dir);
+				}
+			},
+			end_step:function(t){
+				draw_bar(t.graphics, t.x, t.y - t.sprite.height/2 - 10, {border:0x007700, fill:(t.health<60)?((t.health<30)?((t.health<15)?0X770000:0XDD0000):0XDDDD00):0X00DD00}, t.health);
+				draw_bar(t.graphics, t.x, t.y - t.sprite.height/2 - 20, {border:0x005959, fill:0X0000F1}, t.shield, 50);
+			},
+			collision:[
+				{object:CollisionObjects, code:g.collision_bounce},
+				{object:ItemObjects, code:function(t, other){
+					if(other.image_alpha < 1) return;
+					other.instance_destroy();
+					if(!t.me) return;
+					switch(other.object_index){
+						case TreasureBox: g.sound_play('snd_treasure');t.points ++;break;
+						case HealthItem: g.sound_play('snd_health');t.health = Math.min(t.health + 25, 100);break;
+						case ShieldItem: g.sound_play('snd_shield');t.shield = Math.min(t.shield + 10, 50);break;
+					}
+				}},
+				{object:Enemy, code:function(t, other){
+					if(!t.hit){
+						t.snd_zap = g.sound_play('snd_zap', {speed:1.15, volume:0.7});
+						//console.log(d, (t.shield/50), p.end);
+						t.hit = true;
+						t.hit_flash.time = 5;
+						if(!t.me) return;
+						t.health-= (1 + 4*Math.random())*other.power;
+						t.shield = Math.max(t.shield - Math.random()*2*other.power, 1);
+						mplayGroup.send({code:PLAYER,cmd:P_HEALTH, life:t.health, shield:t.shield});
+					}
+				}}
+			],
+			alarms:[
+				{name:'hit_flash', code:function(t){
+					if(!t.hit_rate) return t.reset_hit_rate();
+					t.flash = !t.flash;
+					t.hit_flash.time = Math.max((t.hit_rate--)/10, 2);
+				}},{name:'reset_shoot', code:function(t){
+					t.canshoot = true;
+				}}
+			]
+		});
+
+		Cont.instance_create();
+		for(var ww = 0; ww < g.room.width/32; ww++){
+			Wall.instance_create(32*ww + 16, 16);
+			Wall.instance_create(32*ww + 16, g.room.height - 16);
+		}
+		for(var hh = 1; hh < g.room.height/32 - 1; hh++){
+			Wall.instance_create(16, 32*hh + 16);
+			Wall.instance_create(g.room.width - 16, 32*hh + 16);
+		}
+	}
+};
+	</script>
+	</body>
+</html>
