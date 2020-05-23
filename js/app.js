@@ -2,54 +2,85 @@
 
 'use strict';
 
-var require = (function(modules){
+var require = (function(_modules){
+	function ModuleError(msg,type) {
+		var t = this;
+		if(!(t instanceof ModuleError))
+			Object.setPrototypeOf(t={},ModuleError.prototype);
+
+		var err = Error.call(t,msg);
+		t.message = msg;
+		t.name = "ModuleError";
+		t.stack = err.stack;
+		t.type = type;
+		return t;
+	}
+	Object.setPrototypeOf(ModuleError.prototype,Error.prototype); // inherit
+
+	var modules = {}, moduleFuncs = {};
+
 	function require(name) {
 		if(!(name in modules))
-			throw new Error("Module: Trying to require non-existent module: "+name);
+			throw new ModuleError("Module: Trying to require non-existent module: "+name,'MODULENOTFOUND');
 
-		if(modules[name] instanceof Function) {
+		if(typeof modules[name] === "function") {
 			var exec = modules[name],
-				mod = {exports:{}};
-			modules[name] = mod;
+				mod = {id:name, loaded:false, exports:{}};
+			modules[name] = {mod};
 			try {
 				if(exec(require,mod) !== undefined)
-					throw new Error("Module: return value from module "+name+" should be 'undefined'");
+					throw new ModuleError("Module: return value from module "+name+" should be 'undefined'",'MODULERETURN');
+				mod.loaded = true;
 			} catch(e) {
-				modules[name] = e;
+				delete modules[name].mod;
+				modules[name].err = e;
 			}
 		}
-		if(modules[name] instanceof Error)
-			throw modules[name];
-		return modules[name].exports;
+		if(modules[name].hasOwnProperty('err'))
+			throw modules[name].err;
+		return modules[name].mod.exports;
 	}
 
 	if("reflect" in modules)
-		throw new Error("Cannot redefine core 'reflect' module");
+		throw new ModuleError("Cannot redefine core 'reflect' module",'MODULEREDECLARATION');
 
-	var moduleFuncs = {};
-
-	for(var m in modules)
-		if(typeof modules[m] === "function")
-			moduleFuncs[m] = modules[m];
+	// extract modules from '_modules'
+	for(let m in _modules) {
+		if(typeof _modules[m] === "function")
+			moduleFuncs[m] = modules[m] = _modules[m];
+		else
+			modules[m] = {mod: _modules[m]};
+	}
 
 	modules['reflect'] = function(require,module){
-		module.exports = {
+		var reflect = {
+			ModuleError,
 			modules: moduleFuncs,
 			register: function(name,cb) {
+				if(typeof name === "object") {
+					for(let mod in name)
+						reflect.register(mod,name[mod]);
+					return reflect;
+				}
 				if(name in modules)
-					throw new Error("Cannot register module with existing name: '"+name+"'");
-
+					throw new ModuleError("Cannot register module with existing name: '"+name+"'",'MODULEREDECLARATION');
 				moduleFuncs[name] = modules[name] = cb;
+				return reflect;
 			},
 			export: function(name,exp) {
+				if(typeof name === "object") {
+					for(let mod in name)
+						reflect.export(mod,name[mod]);
+					return reflect;
+				}
 				if(name in modules)
-					throw new Error("Cannot register export with existing module name: '"+name+"'");
-
-				modules[name] = {exports:exp};
-			}
+					throw new ModuleError("Cannot register export with existing module name: '"+name+"'",'MODULEREDECLARATION');
+				modules[name] = {mod:{exports:exp}};
+				return reflect;
+			},
 		};
+		module.exports = reflect;
 	};
-
 	return require;
 })({
 	msgpack:{exports:window.msgpack},
@@ -736,121 +767,6 @@ var require = (function(modules){
 		oop.inherit(GroupCommunicator,Communicator);
 	},
 
-	// app
-	'index'(require,module){
-		var GroupCommunicator = require('server.groupcommunicator');
-
-		// utilize GroupCommunicator here:
-
-		/*
-			var comm = new GroupCommunicator();
-
-
-			// get / set user profile object
-			GroupCommunicator::profile( profile?:object ): object|GroupCommunicator
-
-			// create a new group
-			async GroupCommunicator::create( maxUsers?:int ): Group
-
-			// joins an existing group by its code
-			async GroupCommunicator::join( code:string ): Group
-
-			// gets the group user is currently part of
-			GroupCommunicator::group(): Group|null
-
-			// returns whether or not the socket is still open
-			GroupCommunicator::isConnected(): boolean
-
-			// GroupCommunicator extends Hookable with the following hooks:
-			GroupCommunicator::on({
-				// triggered on incoming broadcast or targeting message
-				message :     (evt: {event:"message", type:"target"|"broadcast", from:User, data:*}) => void,
-
-				// triggered when the WebSocket connection opens
-				connect :     (evt: {event:"connect"}) => void,
-
-				// triggered when WebSocket disconnects
-				disconnect :  (evt: {event:"disconnect"}) => void,
-
-				// triggered when a user joins group
-				joined :      (evt: {event:"joined", user:User}) => void,
-
-				// triggered when a user is kicked from / leaves the group or loses connection
-				left :        (evt: {event:"left", type:"kicked"|"lost"|"leave", user:User}) => void,
-
-				// triggered when this user is kicked from / leaves the group or the group closes
-				leave :       (evt: {event:"leave", type:"kicked"|"closed"|"leave"}) => void,
-
-				// triggered when the ownership of the group changes
-				// (type 'newowner' indicates current user now owns group; type 'owner' indicates just someone else)
-				owner :       (evt: {event:"owner", type:"owner"|"newowner"}) => void,
-
-				// triggered when the max user number is changed
-				max :         (evt: {event:"max", max:int}) => void,
-			})
-
-
-			// returns whether or not the group object is currently active
-			// interacting with closed Group objects will throw an error
-			Group::isClosed(): boolean
-
-			// returns the code for this group
-			Group::code(): string
-
-			// returns the user that currently owns the group
-			Group::owner(): User
-
-			// returns whether the group is currently owned by this user
-			Group::isMine(): boolean
-
-			// leaves this group
-			async Group::leave(): void
-
-			// retrieves a list of the users in the group
-			Group::users(): User[]
-
-			// retrieves the set maximum number of users for the group
-			Group::max(): int
-
-			// returns the current user's User object associated with this group
-			Group::me(): User
-
-			// broadcasts a message to all users in the group
-			async Group::send( data:* ): void
-
-			// sets the maximum number of users for the group (current user must own group)
-			async Group::setMax( newMax:int ): void
-
-			// returns whether or not the group's user limit is filled 
-			Group::isFull(): boolean
-
-
-			// gets the user's id associated with this group
-			User::id(): int
-
-			// returns whether or not this user represents the current user
-			User::isMe(): boolean
-
-			// gets the user's profile object
-			User::profile(): object
-
-			// returns whether or not the user object is currently active
-			// interacting with closed User objects will throw an error
-			User::isClosed(): boolean
-
-			// returns the Group object associated with this user
-			User::group(): Group
-
-			// sends a message, targeting this user only
-			async User::send( data:* ): void
-
-			// kicks this user from the group (current user must own group)
-			async User::kick(): void
-
-			// gives ownership of the group to this user (current user must previously own group)
-			async User::own(): void
-		*/
-	}
 });
 
 //window.addEventListener('load',()=>require('index'));
